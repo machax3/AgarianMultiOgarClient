@@ -941,32 +941,45 @@
             let cell = cells.byId.get(cells.mine[i]);
             if (cell) myCells.push(cell);
         }
+
         if (myCells.length > 0) {
             let x = 0,
                 y = 0,
                 s = 0,
                 score = 0,
+                sizeSum = 0, // variable to store the sum of all sizes
                 len = myCells.length;
+
             for (let i = 0; i < len; i++) {
-                let cell = myCells[i];
-                score += ~~(cell.ns * cell.ns / 100);
-                x += cell.x;
-                y += cell.y;
+               let cell = myCells[i];
+               score += ~~(cell.ns * cell.ns / 100);
+                x += cell.x * cell.s; // multiply by size
+                y += cell.y * cell.s; // multiply by size
                 s += cell.s;
+                sizeSum += cell.s; // add to size sum
             }
-            target.x = x / len;
-            target.y = y / len;
-            target.z = Math.pow(Math.min(64 / s, 1), .4);
+
+            target.x = x / sizeSum; // divide by size sum
+            target.y = y / sizeSum; // divide by size sum
+
+            // Adjust weights based on the size of cells
+            let sizeFactor = Math.min(1, sizeSum / (len * 50)); // You can adjust the factor as needed
+            target.z = Math.pow(sizeFactor, 0.4) * Math.pow(Math.min(64 / s, 1), 0.4);
+
             camera.x = (target.x + camera.x) / 2;
             camera.y = (target.y + camera.y) / 2;
+
             stats.score = score;
             stats.maxScore = Math.max(stats.maxScore, score);
         } else {
             stats.score = NaN;
-            stats.maxScore = 0;
+           stats.maxScore = 0;
             camera.x += (target.x - camera.x) / 20;
             camera.y += (target.y - camera.y) / 20;
+            // Keep a reasonable zoom when no cells are present
+            target.z = Math.max(target.z, 1);
         }
+
         camera.z += (target.z * camera.viewMult * mouse.z - camera.z) / 9;
         camera.zScale = 1 / camera.z;
     }
@@ -1021,7 +1034,7 @@
             }
         }
         updateNumPoints() {
-            let numPoints = Math.min(Math.max(this.s * camera.z | 0, CELL_POINTS_MIN), CELL_POINTS_MAX);
+            let numPoints = Math.min(Math.max(this.s * camera.z | 0, 0), 0);
             if (this.jagged) numPoints = Math.floor(this.s);
             while (this.points.length > numPoints) {
                 let i = Math.random() * this.points.length | 0;
@@ -1106,26 +1119,15 @@
             ctx.fillStyle = settings.showColor ? this.color : Cell.prototype.color;
             let color = String($("#cellBorderColor").val());
             ctx.strokeStyle = color.length === 3 || color.length === 6 ? "#" + color : settings.showColor ? this.sColor : Cell.prototype.sColor;
-            ctx.lineWidth = this.jagged ? 12 : Math.max(~~(this.s / 50), 10);
-            let showCellBorder = settings.cellBorders && !this.food && !this.ejected && 20 < this.s;
+            ctx.lineWidth = 25;
+            let showCellBorder = settings.cellBorders && !this.food;
             if (showCellBorder) this.s -= ctx.lineWidth / 2 - 2;
             ctx.beginPath();
-            if (this.jagged) ctx.lineJoin = "miter";
             if (settings.jellyPhysics && this.points.length) {
                 let point = this.points[0];
                 ctx.moveTo(point.x, point.y);
                 for (let i = 0; i < this.points.length; i++) ctx.lineTo(this.points[i].x, this.points[i].y);
-            } else if (this.jagged) {
-                let points = Math.floor(this.s),
-                    increment = PI_2 / points;
-                ctx.moveTo(this.x, this.y + this.s + 3);
-                for (let i = 1; i < points; i++) {
-                    let angle = i * increment,
-                        dist = this.s - 3 + (i % 2 === 0) * 6;
-                    ctx.lineTo(this.x + dist * Math.sin(angle), this.y + dist * Math.cos(angle));
-                }
-                ctx.lineTo(this.x, this.y + this.s + 3);
-            } else ctx.arc(this.x, this.y, this.s, 0, PI_2, false);
+            } else ctx.arc(this.x, this.y, Math.max(this.s, 0), 0, PI_2, false);
             ctx.closePath();
             if (settings.transparency) ctx.globalAlpha = .75;
             else if (this.destroyed) ctx.globalAlpha = Math.max(200 - Date.now() + this.dead, 0) / 100;
@@ -1295,8 +1297,10 @@
         }
         if (/firefox/i.test(navigator.userAgent)) document.addEventListener("DOMMouseScroll", handleScroll, 0);
         else document.body.onmousewheel = handleScroll;
-        wHandle.onkeydown = function(event) {
-            switch (event.keyCode) {
+let wInterval;
+
+wHandle.onkeydown = function(event) {
+    switch (event.keyCode) {
                 case 13: // Enter
                     if (overlayShown) break;
                     if (settings.hideChat) break;
@@ -1312,11 +1316,16 @@
                     wsSend(UINT8[17]);
                     pressed.space = 1;
                     break;
-                case 87: // W
-                    if (isTyping || overlayShown) break;
-                    wsSend(UINT8[21]);
-                    pressed.w = 1;
-                    break;
+                        case 87: // W
+            if (isTyping || overlayShown || pressed.w) break;
+            wsSend(UINT8[21]);
+            pressed.w = 1;
+            
+            // Set up an interval for sending the action repeatedly
+            wInterval = setInterval(function() {
+                wsSend(UINT8[21]);
+            }, 1); // Adjust the interval as needed
+            break;
                 case 81: // Q
                     if (isTyping || overlayShown || pressed.q) break;
                     wsSend(UINT8[18]);
@@ -1438,9 +1447,10 @@
                 case 32: // Space
                     pressed.space = 0;
                     break;
-                case 87: // W
-                    pressed.w = 0;
-                    break;
+        case 87: // W
+            clearInterval(wInterval); // Clear the interval on key release
+            pressed.w = 0;
+            break;
                 case 81: // Q
                     if (pressed.q) wsSend(UINT8[19]);
                     pressed.q = 0;
